@@ -1,0 +1,361 @@
+---
+title: "PREDICTION OF DEFAULTERS OF CREDIT CARDS"
+author: "Ramaprasad Varun - 1725760044"
+date: "May 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The aim of this code is to check the effect of feature selection in different classification algorithms. 
+The dataset used is Credit Card Defaulters. The "Default" column (2 levels:"1" = NOT DEFAULTER, "2" = DEFAULTER) is the target column to be predicted. The data is initially passed to all the Classification algorithms. The Accuracy, Sensitivity and Specificity are recorded and further, the results from bivariate analysis and incorporated in the analysis. The factor columns with a significant dependancy on the target variable, calculated by chi-square analysis are passed along with the numerical columns whose dependancy with target column is calculated by anova analysis. the results for these are also tabulated and compared with the results when the entire dataset is passed.
+
+
+##Loading Libraries
+
+```{r warning=FALSE}
+library(dplyr)
+library(corrplot)
+library(rpart)
+library(randomForest)
+library(class)
+library(e1071)
+library(caret)
+library(knitr)
+library(tree)
+library(BBmisc)
+library(adabag)
+library(ggplot2)
+
+credit = read.csv("credit-default.csv")
+```
+
+### DATA PRE-PROCESSING
+Changing all the numerical columns with repeated levels tgo factors and checking for NA values.
+
+```{r warning=FALSE}
+str(credit)
+credit$default = as.factor(credit$default)
+credit$dependents = as.factor(credit$dependents)
+credit$existing_credits = as.factor(credit$existing_credits)
+credit$residence_history = as.factor(credit$residence_history)
+credit$installment_rate = as.factor(credit$installment_rate)
+
+##NA VALUES 
+colSums(is.na(credit))
+```
+
+### GETTING NUMERICAL AND FACTORIAL COLUMNS:
+
+```{r warning=FALSE}
+class1 <- function(x){
+ v = sapply(x,is.factor)
+ u = sapply(x,is.numeric)
+ resu = list(Num=names(x)[u],Fact = names(x)[v])
+ return(resu)
+}
+a = class1(credit)
+num = a[[1]]
+fact = a[[2]]
+num
+fact
+```
+
+### UNIVARIATE ANALYSIS FOR CATEGORICAL COLUMNS:
+
+```{r message=FALSE, warning=FALSE}
+C = credit %>% select(fact)
+apply(C, MARGIN = 2, table)
+
+```
+
+
+###FEATURE SELECTION:
+
+ In this step, the target variable is tested for chi2(with factor columns) and anova(with numerical columns). the output of these will be then sent to models. 
+```{r warning=FALSE}
+
+chisq<- function(x,variable){
+fname=c()
+p_value=c()
+for(i in fact){
+chi<- chisq.test(x[,variable],x[,i])
+p<- chi[['p.value']]
+if(p<0.05){
+p_value <- c(p_value,p)
+fname <- c(fname,i)
+    }
+}
+  df<- data.frame(p_value,fname)
+   return(df)
+}
+chi = chisq(credit,'default')
+
+
+
+
+av<- function(x,variable){
+name=c()
+av_value=c()
+for(i in num){
+anova = aov(x[,i]~x[,variable])
+p<- summary(anova)[[1]][1,"Pr(>F)"]
+if(p<0.05){
+av_value <- c(av_value,p)
+name <- c(name,i)
+    }
+}
+  df<- data.frame(av_value,name)
+   return(df)
+}
+ann = av(credit,"default")
+
+```
+
+### SAMPLING
+We take a 70% sample for training and 30% sample for testing
+```{r warning=FALSE}
+set.seed(108)
+cr_train = credit[sample(seq(1:nrow(credit)),0.7*nrow(credit)),]
+cr_test = credit[-sample(seq(1:nrow(credit)),0.7*nrow(credit)),]
+```
+
+
+###Passing all the columns to Classification Models
+
+### Decision Tree Using Rpart
+
+```{r warning=FALSE}
+set.seed(108)
+accu = c()
+sens = c()
+spec = c()
+model_name = c()
+rpartmodel = rpart(default~.,data=cr_train)
+pred = as.data.frame(predict(rpartmodel, cr_test[,-17]))
+res = ifelse(pred$`2`>0.5, 2,1)
+cm = confusionMatrix(table(res,cr_test$default), positive = '2')
+accu = c(accu,cm[[3]]["Accuracy"])
+sens = c(sens,cm[[4]][1])
+spec = c(spec,cm[[4]][2])
+model_name = c(model_name, "R-PART")
+
+```
+
+
+### USING RANDOM FOREST ALGO
+
+```{r warning=FALSE}
+set.seed(108)
+random = randomForest(default~.,data=cr_train,ntree = 300)
+pred2 = as.data.frame(predict(random, cr_test[,-17]))
+cm2 = confusionMatrix(table(pred2$`predict(random, cr_test[, -17])`,cr_test$default), positive = '2')
+accu = c(accu,cm2[[3]]["Accuracy"])
+sens = c(sens,cm2[[4]][1])
+spec = c(spec,cm2[[4]][2])
+model_name = c(model_name, "RANDOM FOREST")
+```
+
+### KNN Classification
+
+All the categorical columns are converted to numerical using Dummy Vars functions which splits each level into a new column.
+
+```{r warning=FALSE}
+set.seed(108)
+credit1 = credit %>% select(-default)
+dummycredit = dummyVars(~.,data=credit1)
+d_credit = data.frame(predict(dummycredit,newdata = credit))
+normal = normalize(d_credit,method = "range", range = c(0,1))
+normal$default = credit$default
+cr_train1 = normal[sample(seq(1:nrow(normal)),0.7*nrow(normal)),]
+cr_test1 = normal[-sample(seq(1:nrow(normal)),0.7*nrow(normal)),]
+
+kmodel = knn(cr_train1,cr_test1,cl =  cr_train1$default, k = sqrt(length(cr_test1)))
+cm3 = confusionMatrix(table(kmodel,cr_test1$default),positive = '2')
+accu = c(accu,cm3[[3]]["Accuracy"])
+sens = c(sens,cm3[[4]][1])
+spec = c(spec,cm3[[4]][2])
+model_name = c(model_name, "KNN")
+
+```
+
+### NAIVE BAYES
+
+All the numerical columns are first converted to categorical and then passed into the model.
+
+```{r warning=FALSE}
+set.seed(108)
+
+credit1$months_loan_duration_bin= as.factor(cut(credit1$months_loan_duration,5))
+credit1$amount_bin = as.factor(cut(credit1$amount,5))
+credit1$age_bin = as.factor(cut(credit1$age,5))
+
+credit2 = credit1 %>% select(-c(months_loan_duration, amount, age))
+credit2$default = credit$default
+
+cr_train2 = credit2[sample(seq(1:nrow(credit2)),0.7*nrow(credit2)),]
+cr_test2 = credit2[-sample(seq(1:nrow(credit2)),0.7*nrow(credit2)),]
+
+
+nb = naiveBayes(default~.,data=cr_train2)
+nb1 = data.frame(predict(nb,cr_test2,type='raw'))
+nb2 = ifelse(nb1$X2>0.5, 2,1)
+cm4 = confusionMatrix(table(nb2,cr_test$default),positive = '2')
+accu = c(accu,cm4[[3]]["Accuracy"])
+sens = c(sens,cm4[[4]][1])
+spec = c(spec,cm4[[4]][2])
+model_name = c(model_name, "NAIVE BAYES")
+
+```
+
+### ADAPTIVE BOOSTING
+
+```{r warning=FALSE}
+set.seed(108)
+model_boost=boosting(default~.,data=cr_train)
+predict_obj=predict(model_boost,cr_test,type = "class")
+prediction = as.factor(predict_obj$class)
+cm_ad=confusionMatrix(prediction,cr_test$default,positive = '2')
+
+accu = c(accu,cm_ad[[3]]["Accuracy"])
+sens = c(sens,cm_ad[[4]][1])
+spec = c(spec,cm_ad[[4]][2])
+model_name = c(model_name, "ADAPTIVE BOOSTING")
+
+```
+
+### RESULT OF MACHINE LEARNING CLASSIFICATION WITH ALL COLUMNS:
+
+```{r}
+resultdf = data.frame('MODEL'= model_name, 'ACCURACY' = accu, 'SENSITIVITY' = sens,'SPECIFICITY'= spec)
+kable(resultdf)
+
+```
+
+## CLASSIFICATION ON FEATURE SELECTED DATASET:
+
+The output of Chi-square and Anova functions are passed into the models again to compare the Accuracy, Sensitivity and Specificity.
+
+```{r warning=FALSE}
+feature = credit[,c(ann$name,chi$fname)]
+feature$default = credit$default
+set.seed(108)
+train_cr = feature[sample(seq(1:nrow(feature)),0.7*nrow(feature)),]
+test_cr = feature[-sample(seq(1:nrow(feature)),0.7*nrow(feature)),]
+```
+
+### Decision Tree Using Rpart
+
+```{r warning=FALSE}
+set.seed(108)
+accura = c()
+sensi = c()
+specf = c()
+model_name_feature = c()
+rpartmodel_feature = rpart(default~.,data=train_cr)
+pred01 = as.data.frame(predict(rpartmodel_feature, test_cr[,-16]))
+res12 = ifelse(pred01$`2`>0.5, 2,1)
+cm01 = confusionMatrix(table(res12,test_cr$default), positive = '2')
+accura = c(accura,cm01[[3]]["Accuracy"])
+sensi = c(sensi,cm01[[4]][1])
+specf = c(specf,cm01[[4]][2])
+model_name_feature = c(model_name_feature, "R-PART")
+```
+
+### USING RANDOM FOREST ALGO
+
+```{r warning=FALSE}
+set.seed(108)
+randomfeature = randomForest(default~.,data=train_cr,ntree = 300)
+pred2 = as.data.frame(predict(randomfeature, test_cr[,-16]))
+cm21 = confusionMatrix(table(pred2$`predict(randomfeature, test_cr[, -16])`,test_cr$default), positive = '2')
+accura = c(accura,cm21[[3]]["Accuracy"])
+sensi = c(sensi,cm21[[4]][1])
+specf = c(specf,cm21[[4]][2])
+model_name_feature = c(model_name_feature, "RANDOM FOREST")
+```
+
+### KNN Classification
+
+```{r warning=FALSE}
+set.seed(108)
+feature1 = feature %>% select(-default)
+
+dummyfeature = dummyVars(~.,data=feature1)
+d_feature = data.frame(predict(dummyfeature,newdata = feature))
+normal1 = normalize(d_feature,method = "range", range = c(0,1))
+normal1$default = feature$default
+cr_train12 = normal1[sample(seq(1:nrow(normal1)),0.7*nrow(normal1)),]
+cr_test12 = normal1[-sample(seq(1:nrow(normal1)),0.7*nrow(normal1)),]
+
+kmodel = knn(cr_train12,cr_test12,cl = cr_train12$default)
+cm31 = confusionMatrix(table(kmodel,cr_test12$default),positive = '2')
+accura = c(accura,cm31[[3]]["Accuracy"])
+sensi = c(sensi,cm31[[4]][1])
+specf = c(specf,cm31[[4]][2])
+model_name_feature = c(model_name_feature, "KNN")
+
+```
+
+
+## NAIVE BAYES
+
+```{r warning=FALSE}
+set.seed(108)
+
+feature1$months_loan_duration_bin= as.factor(cut(feature1$months_loan_duration,5))
+feature1$amount_bin = as.factor(cut(feature1$amount,5))
+
+feature2 = feature1 %>% select(-c(months_loan_duration, amount))
+feature2$default = feature$default
+
+
+cr_train21 = feature2[sample(seq(1:nrow(feature2)),0.7*nrow(feature2)),]
+cr_test21 = feature2[-sample(seq(1:nrow(feature2)),0.7*nrow(feature2)),]
+
+nb00 = naiveBayes(default~.,data=cr_train21)
+nb11 = data.frame(predict(nb,cr_test21,type='raw'))
+nb21 = ifelse(nb1$X2>0.5, 2,1)
+cm41 = confusionMatrix(table(nb2,cr_test$default),positive = '2')
+accura = c(accura,cm41[[3]]["Accuracy"])
+sensi = c(sensi,cm41[[4]][1])
+specf = c(specf,cm41[[4]][2])
+model_name_feature = c(model_name_feature, "NAIVE BAYES")
+
+```
+
+
+### ADAPTIVE BOOSTING
+
+```{r warning=FALSE}
+set.seed(108)
+model_boost_feature=boosting(default~.,data=train_cr)
+predict_obj_ft=predict(model_boost_feature,test_cr,type = "class")
+prediction_boost= as.factor(predict_obj$class)
+cm_ad_feature=confusionMatrix(prediction_boost,test_cr$default,positive = '2')
+
+accura = c(accura,cm_ad_feature[[3]]["Accuracy"])
+sensi = c(sensi,cm_ad_feature[[4]][1])
+specf = c(specf,cm_ad_feature[[4]][2])
+model_name_feature = c(model_name_feature, "ADAPTIVE BOOSTING")
+
+```
+
+### FINAL OUTPUT OF THE FEATURED SELECTED COLUMNS:
+
+```{r}
+resultdf2 = data.frame("MODEL"= model_name_feature,'ACCURACY' = accura, 'SENSITIVITY'= sensi,'SPECIFICITY'= specf)
+kable(resultdf2)
+```
+
+
+###CONCLUSION:
+
+On comparision of "resultdf" and "resultdf2" and analysing the dataset, we can broadly say that the dataset has bias in the default variable. Hence, considering Sensitvity and Specificity would be a better measure in the given dataset. On doing so, we can see that there is a minor drop sensitivity for all models except KNN-Classifier. Hence, it can be said that feature selection based only on chi-sqaure and anova will not suffice the purpose of increasing the prediction capabilities of the model. 
+
+
+
+
+
